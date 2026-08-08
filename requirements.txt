@@ -1,0 +1,15 @@
+# LEAN deployment requirements -- only what app/api.py and
+# app/streamlit_app.py actually need at runtime to serve predictions.
+# mlflow, dvc, dvc-s3, python-dotenv are TRAINING-time tools, not needed
+# here -- including them pulled in heavy, unnecessary transitive
+# dependencies (300MB+ CUDA/GPU libraries), slowing the build drastically.
+
+fastapi>=0.100.0
+uvicorn>=0.22.0
+streamlit>=1.25.0
+requests>=2.31.0
+pandas>=2.0.0
+numpy>=1.24.0
+scikit-learn>=1.2.0
+xgboost>=1.7.0
+joblib>=1.2.0

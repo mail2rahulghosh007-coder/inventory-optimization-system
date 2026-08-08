@@ -1,0 +1,46 @@
+stages:
+  load_data:
+    cmd: python src/phase1_load_data.py
+    deps:
+      - src/phase1_load_data.py
+    outs:
+      - data/retail_subset.csv
+
+  feature_engineering:
+    cmd: python src/phase2_feature_engineering.py
+    deps:
+      - src/phase1_load_data.py
+      - src/phase2_feature_engineering.py
+      - data/retail_subset.csv
+    outs:
+      - data/retail_features.csv
+      - models/feature_list.pkl
+
+  train_models:
+    cmd: python src/phase3_train_quantile_models.py
+    deps:
+      - src/phase2_feature_engineering.py
+      - src/phase3_train_quantile_models.py
+      - data/retail_features.csv
+      - models/feature_list.pkl
+    outs:
+      - models/model_perishable.pkl
+      - models/model_nonperishable.pkl
+
+  evaluate_models:
+    cmd: python src/phase4_evaluate_models.py
+    deps:
+      - src/phase3_train_quantile_models.py
+      - src/phase4_evaluate_models.py
+      - models/model_perishable.pkl
+      - models/model_nonperishable.pkl
+
+  inference:
+    cmd: python src/phase5_inference.py
+    deps:
+      - src/phase4_evaluate_models.py
+      - src/phase5_inference.py
+      - models/model_perishable.pkl
+      - models/model_nonperishable.pkl
+    outs:
+      - data/inventory_recommendations.csv

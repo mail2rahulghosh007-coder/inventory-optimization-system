@@ -1,0 +1,109 @@
+schema: '2.0'
+stages:
+  load_data:
+    cmd: python src/phase1_load_data.py
+    deps:
+    - path: src/phase1_load_data.py
+      hash: md5
+      md5: e87e5ebbbb3411a2c52fc08b11f4278c
+      size: 3042
+    outs:
+    - path: data/retail_subset.csv
+      hash: md5
+      md5: 3c8a0e80a99a4ac4726aaa4906cf6cc0
+      size: 224609405
+  feature_engineering:
+    cmd: python src/phase2_feature_engineering.py
+    deps:
+    - path: data/retail_subset.csv
+      hash: md5
+      md5: 3c8a0e80a99a4ac4726aaa4906cf6cc0
+      size: 224609405
+    - path: src/phase1_load_data.py
+      hash: md5
+      md5: e87e5ebbbb3411a2c52fc08b11f4278c
+      size: 3042
+    - path: src/phase2_feature_engineering.py
+      hash: md5
+      md5: 14ff7502caf465ea6809994c54b111c3
+      size: 3294
+    outs:
+    - path: data/retail_features.csv
+      hash: md5
+      md5: 8bc7dea6fb05c9577f8d0feccc2478db
+      size: 702330585
+    - path: models/feature_list.pkl
+      hash: md5
+      md5: a98059e935ed7d09d47f15ae46377dab
+      size: 373
+  train_models:
+    cmd: python src/phase3_train_quantile_models.py
+    deps:
+    - path: data/retail_features.csv
+      hash: md5
+      md5: 8bc7dea6fb05c9577f8d0feccc2478db
+      size: 702330585
+    - path: models/feature_list.pkl
+      hash: md5
+      md5: a98059e935ed7d09d47f15ae46377dab
+      size: 373
+    - path: src/phase2_feature_engineering.py
+      hash: md5
+      md5: 14ff7502caf465ea6809994c54b111c3
+      size: 3294
+    - path: src/phase3_train_quantile_models.py
+      hash: md5
+      md5: 2729fa843d9c6e0c440ae059ffffb40a
+      size: 4391
+    outs:
+    - path: models/model_nonperishable.pkl
+      hash: md5
+      md5: e3a066627df7866ab5877c5db1e9c78f
+      size: 3064334
+    - path: models/model_perishable.pkl
+      hash: md5
+      md5: 53c3ad69fb2647fc9d745356e1e91452
+      size: 1600762
+  evaluate_models:
+    cmd: python src/phase4_evaluate_models.py
+    deps:
+    - path: models/model_nonperishable.pkl
+      hash: md5
+      md5: e3a066627df7866ab5877c5db1e9c78f
+      size: 3064334
+    - path: models/model_perishable.pkl
+      hash: md5
+      md5: 53c3ad69fb2647fc9d745356e1e91452
+      size: 1600762
+    - path: src/phase3_train_quantile_models.py
+      hash: md5
+      md5: 2729fa843d9c6e0c440ae059ffffb40a
+      size: 4391
+    - path: src/phase4_evaluate_models.py
+      hash: md5
+      md5: f1fa94a13449a4c3280d0cf40835d742
+      size: 2216
+  inference:
+    cmd: python src/phase5_inference.py
+    deps:
+    - path: models/model_nonperishable.pkl
+      hash: md5
+      md5: e3a066627df7866ab5877c5db1e9c78f
+      size: 3064334
+    - path: models/model_perishable.pkl
+      hash: md5
+      md5: 53c3ad69fb2647fc9d745356e1e91452
+      size: 1600762
+    - path: src/phase4_evaluate_models.py
+      hash: md5
+      md5: f1fa94a13449a4c3280d0cf40835d742
+      size: 2216
+    - path: src/phase5_inference.py
+      hash: md5
+      md5: fc674c1ee25b5e321a78f6a2b9f497f9
+      size: 2046
+    outs:
+    - path: data/inventory_recommendations.csv
+      hash: md5
+      md5: 08d196de3b8b9a70e8a9f920ca6bccec
+      size: 3184
