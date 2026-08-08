@@ -6,7 +6,7 @@ import os
 import math
 import logging
 import json
-from datetime import datetime
+from datetime import datetime, timezone
 
 import joblib
 import pandas as pd
@@ -14,10 +14,12 @@ import streamlit as st
 
 st.set_page_config(page_title="Favorita Demand Forecasting", layout="centered")
 
-MODEL_DIR = 'models'
-DATA_PATH = os.path.join('data', 'retail_features.csv')
+# Fix 3: Robust absolute paths anchored to script's own location
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+MODEL_DIR = os.path.join(BASE_DIR, 'models')
+DATA_PATH = os.path.join(BASE_DIR, 'data', 'retail_features.csv')
+LOG_DIR = os.path.join(BASE_DIR, 'logs')
 
-LOG_DIR = 'logs'
 os.makedirs(LOG_DIR, exist_ok=True)
 logging.basicConfig(
     filename=os.path.join(LOG_DIR, 'requests.log'),
@@ -96,7 +98,7 @@ def predict_demand(store_nbr, item_nbr, onpromotion, perishable, feature_dict,
         if col not in input_df.columns:
             input_df[col] = 0
     
-    # Ensure exact column alignment and convert to numeric to prevent XGBoost type/feature errors
+    # Ensure exact column alignment and numeric conversion to prevent model errors
     input_df = input_df[feature_cols].apply(pd.to_numeric, errors='coerce').fillna(0)
 
     if perishable == 1:
@@ -139,7 +141,7 @@ if df_features is None:
     st.error(
         "⚠️ Could not load `data/retail_features.csv`. Predictions cannot be "
         "generated without it. Check that this file is actually present in "
-        "the deployed repo (not just a DVC pointer)."
+        "the deployed repo."
     )
 
 if models_loaded and df_features is not None:
@@ -190,8 +192,9 @@ if models_loaded and df_features is not None:
                 if drift_reasons:
                     st.warning("⚠️ Lower-confidence prediction: " + "; ".join(drift_reasons) + ".")
 
+                # Fix 2: Timezone-aware UTC datetime implementation
                 log_entry = {
-                    'timestamp': datetime.now().isoformat(),
+                    'timestamp': datetime.now(timezone.utc).isoformat(),
                     'store_nbr': int(store_nbr),
                     'item_nbr': int(item_nbr),
                     'target_date': str(target_date),
