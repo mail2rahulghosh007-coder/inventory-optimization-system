@@ -1,6 +1,12 @@
 # app/streamlit_app_standalone.py
-# Deployment version for Streamlit Community Cloud: loads the quantile
-# regression models DIRECTLY inside Streamlit (no separate FastAPI process).
+# Deployment version for Streamlit Community Cloud.
+#
+# IMPORTANT MEMORY FIX:
+# The previous version loaded the entire data/retail_features.csv (702MB), which exceeded 
+# the free-tier RAM limit (~1GB) and caused an OOM crash during the second prediction.
+# Now it loads data/inference_snapshot.parquet (a few MBs), which is pre-built using 
+# the build_inference_snapshot.py script, containing the latest row + drift counts 
+# for each (store_nbr, item_nbr) combination.
 
 import os
 import math
@@ -14,12 +20,11 @@ import streamlit as st
 
 st.set_page_config(page_title="Favorita Demand Forecasting", layout="centered")
 
-# Safe Initialization & Error Exposure block to catch startup crashes
 try:
     BASE_DIR = os.path.dirname(os.path.abspath(__file__))
     ROOT_DIR = os.path.abspath(os.path.join(BASE_DIR, '..'))
     MODEL_DIR = os.path.join(ROOT_DIR, 'models')
-    DATA_PATH = os.path.join(ROOT_DIR, 'data', 'retail_features.csv')
+    SNAPSHOT_PATH = os.path.join(ROOT_DIR, 'data', 'inference_snapshot.parquet')
     LOG_DIR = os.path.join(ROOT_DIR, 'logs')
 
     os.makedirs(LOG_DIR, exist_ok=True)
@@ -37,7 +42,7 @@ try:
         m_perish_path = os.path.join(MODEL_DIR, 'model_perishable.pkl')
         m_nonperish_path = os.path.join(MODEL_DIR, 'model_nonperishable.pkl')
         feat_path = os.path.join(MODEL_DIR, 'feature_list.pkl')
-        
+
         for p in [m_perish_path, m_nonperish_path, feat_path]:
             if not os.path.exists(p):
                 raise FileNotFoundError(f"Missing model file at: {p}")
@@ -48,18 +53,27 @@ try:
         return model_perishable, model_nonperishable, feature_cols
 
     @st.cache_data(show_spinner=True, ttl=3600)
-    def load_feature_dataset():
-        if os.path.exists(DATA_PATH):
-            return pd.read_csv(DATA_PATH, parse_dates=['date'])
-        raise FileNotFoundError(f"Missing dataset at: {DATA_PATH}")
+    def load_snapshot():
+        if not os.path.exists(SNAPSHOT_PATH):
+            raise FileNotFoundError(
+                f"Missing {SNAPSHOT_PATH}. Run build_inference_snapshot.py first "
+                f"and commit the resulting parquet file to the repo."
+            )
+        df = pd.read_parquet(SNAPSHOT_PATH)
+        # Reduce dtypes to further lower memory usage
+        for col in df.select_dtypes(include=['float64']).columns:
+            df[col] = df[col].astype('float32')
+        for col in df.select_dtypes(include=['int64']).columns:
+            df[col] = df[col].astype('int32')
+        return df
 
     model_perishable, model_nonperishable, feature_cols = load_models()
-    df_features = load_feature_dataset()
+    df_snapshot = load_snapshot()
     models_loaded = True
 
 except Exception as e:
     models_loaded = False
-    df_features = None
+    df_snapshot = None
     st.error("🚨 FATAL STARTUP ERROR DETECTED:")
     st.exception(e)
     import traceback
@@ -70,7 +84,8 @@ except Exception as e:
 def build_input_features(latest_row, target_date, feature_cols):
     feature_dict = latest_row.to_dict()
     for col in ['date', 'unit_sales', 'id', 'store_nbr', 'item_nbr',
-                'perishable', 'onpromotion']:
+                'perishable', 'onpromotion', 'exact_match_count',
+                'item_history_count']:
         feature_dict.pop(col, None)
 
     feature_dict['month'] = target_date.month
@@ -107,7 +122,7 @@ def predict_demand(store_nbr, item_nbr, onpromotion, perishable, feature_dict,
     for col in feature_cols:
         if col not in input_df.columns:
             input_df[col] = 0
-    
+
     input_df = input_df[feature_cols].apply(pd.to_numeric, errors='coerce').fillna(0)
 
     if perishable == 1:
@@ -121,39 +136,39 @@ def predict_demand(store_nbr, item_nbr, onpromotion, perishable, feature_dict,
     return recommended_stock, alpha_used
 
 
-def check_input_drift(store_nbr, item_nbr, all_data):
+def check_input_drift(row):
     reasons = []
-    if all_data is not None:
-        exact_match_count = len(all_data[(all_data['store_nbr'] == store_nbr) &
-                                         (all_data['item_nbr'] == item_nbr)])
-        if exact_match_count == 0:
-            reasons.append("no direct history for this exact store+item combination")
-        item_history_count = len(all_data[all_data['item_nbr'] == item_nbr])
-        if item_history_count < 10:
-            reasons.append(f"this item has only {item_history_count} historical records overall")
+    if row.get('exact_match_count', 1) == 0:
+        reasons.append("no direct history for this exact store+item combination")
+    item_hist = row.get('item_history_count', 999)
+    if item_hist < 10:
+        reasons.append(f"this item has only {int(item_hist)} historical records overall")
     return reasons
 
 
 st.title("🛒 Favorita Retail Demand Forecasting")
 st.markdown("Quantile Regression based Inventory Optimization Dashboard")
 
-if models_loaded and df_features is not None:
+if models_loaded and df_snapshot is not None:
     st.sidebar.header("Forecast Parameters")
 
     store_nbr = st.sidebar.number_input("Store Number", min_value=1, max_value=54, value=25)
-    available_items = df_features['item_nbr'].unique()
+    available_items = df_snapshot['item_nbr'].unique()
     item_nbr = st.sidebar.selectbox("Select Item ID", options=available_items)
 
     target_date = st.sidebar.date_input("Forecast Date", value=datetime.today())
     onpromotion = st.sidebar.selectbox("Is On Promotion?", options=[0, 1],
                                        format_func=lambda x: "Yes" if x == 1 else "No")
 
-    matched_rows = df_features[(df_features['store_nbr'] == int(store_nbr)) &
-                               (df_features['item_nbr'] == int(item_nbr))]
-    if matched_rows.empty:
-        matched_rows = df_features[df_features['item_nbr'] == int(item_nbr)]
+    matched = df_snapshot[(df_snapshot['store_nbr'] == int(store_nbr)) &
+                          (df_snapshot['item_nbr'] == int(item_nbr))]
+    if matched.empty:
+        # If this item is not available in that store, take the item's most recent row 
+        # (from any store) as a fallback
+        item_rows = df_snapshot[df_snapshot['item_nbr'] == int(item_nbr)]
+        matched = item_rows.sort_values('date').tail(1) if not item_rows.empty else item_rows
 
-    latest_row = matched_rows.sort_values('date').iloc[-1] if not matched_rows.empty else None
+    latest_row = matched.iloc[-1] if not matched.empty else None
 
     if latest_row is not None:
         perishable = int(latest_row.get('perishable', 1))
@@ -181,7 +196,7 @@ if models_loaded and df_features is not None:
                 col1.metric("Recommended Stock", f"{recommended_stock} units")
                 col2.metric("Target Risk Level (Alpha)", f"{alpha_used}")
 
-                drift_reasons = check_input_drift(int(store_nbr), int(item_nbr), df_features)
+                drift_reasons = check_input_drift(latest_row)
                 if drift_reasons:
                     st.warning("⚠️ Lower-confidence prediction: " + "; ".join(drift_reasons) + ".")
 
