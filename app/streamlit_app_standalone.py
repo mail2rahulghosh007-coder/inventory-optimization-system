@@ -210,7 +210,9 @@ if models_loaded and df_features is not None:
                     st.json(log_entry)
 
             except Exception as e:
-                st.error(f"Prediction failed: {e}")
+                import traceback
+                st.error(f"Detailed Error: {e}")
+                st.code(traceback.format_exc())
 
 st.divider()
 st.caption(
