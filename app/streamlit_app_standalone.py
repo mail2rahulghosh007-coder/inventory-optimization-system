@@ -51,12 +51,6 @@ def build_input_features(latest_row, target_date, feature_cols):
     latest known static/rolling features (from latest_row), then
     OVERWRITING the date-dependent features (day-of-week, month, weekend)
     with values computed from the user's actually selected target_date.
-
-    BUG FIXED: the previous version left dow_0..dow_6 (and is_weekend)
-    at whatever historical values happened to be in latest_row, never
-    updating them for the date the user actually asked about -- meaning
-    changing the forecast date had no effect on these features, which
-    contributed to identical predictions across different inputs.
     """
     feature_dict = latest_row.to_dict()
     for col in ['date', 'unit_sales', 'id', 'store_nbr', 'item_nbr',
@@ -75,8 +69,6 @@ def build_input_features(latest_row, target_date, feature_cols):
         feature_dict[dow_col] = 1
 
     # ---- Safely handle any remaining non-numeric values ----
-    # (rather than silently zeroing every string, which could hide a real
-    # feature-encoding problem -- log a warning instead so it's visible)
     for k, v in list(feature_dict.items()):
         if isinstance(v, str):
             monitor_logger.warning(json.dumps({
@@ -92,7 +84,7 @@ def build_input_features(latest_row, target_date, feature_cols):
 
 
 def predict_demand(store_nbr, item_nbr, onpromotion, perishable, feature_dict,
-                    model_perishable, model_nonperishable, feature_cols):
+                   model_perishable, model_nonperishable, feature_cols):
     input_features = dict(feature_dict)
     input_features['store_nbr'] = store_nbr
     input_features['item_nbr'] = item_nbr
@@ -103,7 +95,9 @@ def predict_demand(store_nbr, item_nbr, onpromotion, perishable, feature_dict,
     for col in feature_cols:
         if col not in input_df.columns:
             input_df[col] = 0
-    input_df = input_df[feature_cols]
+    
+    # Ensure exact column alignment and convert to numeric to prevent XGBoost type/feature errors
+    input_df = input_df[feature_cols].apply(pd.to_numeric, errors='coerce').fillna(0)
 
     if perishable == 1:
         raw_pred = model_perishable.predict(input_df)[0]
@@ -120,7 +114,7 @@ def check_input_drift(store_nbr, item_nbr, all_data):
     reasons = []
     if all_data is not None:
         exact_match_count = len(all_data[(all_data['store_nbr'] == store_nbr) &
-                                           (all_data['item_nbr'] == item_nbr)])
+                                         (all_data['item_nbr'] == item_nbr)])
         if exact_match_count == 0:
             reasons.append("no direct history for this exact store+item combination")
         item_history_count = len(all_data[all_data['item_nbr'] == item_nbr])
@@ -157,10 +151,10 @@ if models_loaded and df_features is not None:
 
     target_date = st.sidebar.date_input("Forecast Date", value=datetime.today())
     onpromotion = st.sidebar.selectbox("Is On Promotion?", options=[0, 1],
-                                         format_func=lambda x: "Yes" if x == 1 else "No")
+                                       format_func=lambda x: "Yes" if x == 1 else "No")
 
     matched_rows = df_features[(df_features['store_nbr'] == int(store_nbr)) &
-                                 (df_features['item_nbr'] == int(item_nbr))]
+                               (df_features['item_nbr'] == int(item_nbr))]
     if matched_rows.empty:
         matched_rows = df_features[df_features['item_nbr'] == int(item_nbr)]
 
@@ -197,7 +191,7 @@ if models_loaded and df_features is not None:
                     st.warning("⚠️ Lower-confidence prediction: " + "; ".join(drift_reasons) + ".")
 
                 log_entry = {
-                    'timestamp': datetime.utcnow().isoformat(),
+                    'timestamp': datetime.now().isoformat(),
                     'store_nbr': int(store_nbr),
                     'item_nbr': int(item_nbr),
                     'target_date': str(target_date),
