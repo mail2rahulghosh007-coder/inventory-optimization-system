@@ -2,7 +2,6 @@
 # Deployment version for Streamlit Community Cloud: loads the quantile
 # regression models DIRECTLY inside Streamlit (no separate FastAPI process).
 
-# app/streamlit_app_standalone.py
 import os
 import math
 import logging
@@ -15,55 +14,67 @@ import streamlit as st
 
 st.set_page_config(page_title="Favorita Demand Forecasting", layout="centered")
 
-# Correct Path Fix: Pointing to the project root directory
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-ROOT_DIR = os.path.abspath(os.path.join(BASE_DIR, '..'))
-MODEL_DIR = os.path.join(ROOT_DIR, 'models')
-DATA_PATH = os.path.join(ROOT_DIR, 'data', 'retail_features.csv')
-LOG_DIR = os.path.join(ROOT_DIR, 'logs')
+# Safe Initialization & Error Exposure block to catch startup crashes
+try:
+    BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+    ROOT_DIR = os.path.abspath(os.path.join(BASE_DIR, '..'))
+    MODEL_DIR = os.path.join(ROOT_DIR, 'models')
+    DATA_PATH = os.path.join(ROOT_DIR, 'data', 'retail_features.csv')
+    LOG_DIR = os.path.join(ROOT_DIR, 'logs')
 
-os.makedirs(LOG_DIR, exist_ok=True)
-logging.basicConfig(
-    filename=os.path.join(LOG_DIR, 'requests.log'),
-    level=logging.INFO,
-    format='%(message)s'
-)
-monitor_logger = logging.getLogger('forecast_monitor')
+    os.makedirs(LOG_DIR, exist_ok=True)
+    logging.basicConfig(
+        filename=os.path.join(LOG_DIR, 'requests.log'),
+        level=logging.INFO,
+        format='%(message)s'
+    )
+    monitor_logger = logging.getLogger('forecast_monitor')
 
-# Column names that correspond to each day-of-week one-hot slot, matching
-# feature_list.pkl's 'dow_0'..'dow_6' naming
-DOW_COLS = ['dow_0', 'dow_1', 'dow_2', 'dow_3', 'dow_4', 'dow_5', 'dow_6']
+    DOW_COLS = ['dow_0', 'dow_1', 'dow_2', 'dow_3', 'dow_4', 'dow_5', 'dow_6']
 
+    @st.cache_resource
+    def load_models():
+        m_perish_path = os.path.join(MODEL_DIR, 'model_perishable.pkl')
+        m_nonperish_path = os.path.join(MODEL_DIR, 'model_nonperishable.pkl')
+        feat_path = os.path.join(MODEL_DIR, 'feature_list.pkl')
+        
+        for p in [m_perish_path, m_nonperish_path, feat_path]:
+            if not os.path.exists(p):
+                raise FileNotFoundError(f"Missing model file at: {p}")
 
-@st.cache_resource
-def load_models():
-    model_perishable = joblib.load(os.path.join(MODEL_DIR, 'model_perishable.pkl'))
-    model_nonperishable = joblib.load(os.path.join(MODEL_DIR, 'model_nonperishable.pkl'))
-    feature_cols = joblib.load(os.path.join(MODEL_DIR, 'feature_list.pkl'))
-    return model_perishable, model_nonperishable, feature_cols
+        model_perishable = joblib.load(m_perish_path)
+        model_nonperishable = joblib.load(m_nonperish_path)
+        feature_cols = joblib.load(feat_path)
+        return model_perishable, model_nonperishable, feature_cols
 
+    @st.cache_data(show_spinner=True, ttl=3600)
+    def load_feature_dataset():
+        if os.path.exists(DATA_PATH):
+            return pd.read_csv(DATA_PATH, parse_dates=['date'])
+        raise FileNotFoundError(f"Missing dataset at: {DATA_PATH}")
 
-@st.cache_data(show_spinner=True, ttl=3600)
-def load_feature_dataset():
-    if os.path.exists(DATA_PATH):
-        return pd.read_csv(DATA_PATH, parse_dates=['date'])
-    return None
+    model_perishable, model_nonperishable, feature_cols = load_models()
+    df_features = load_feature_dataset()
+    models_loaded = True
+
+except Exception as e:
+    models_loaded = False
+    df_features = None
+    st.error("🚨 FATAL STARTUP ERROR DETECTED:")
+    st.exception(e)
+    import traceback
+    st.code(traceback.format_exc())
+    st.stop()
 
 
 def build_input_features(latest_row, target_date, feature_cols):
-    """Builds the feature dict for prediction, starting from the item's
-    latest known static/rolling features (from latest_row), then
-    OVERWRITING the date-dependent features (day-of-week, month, weekend)
-    with values computed from the user's actually selected target_date.
-    """
     feature_dict = latest_row.to_dict()
     for col in ['date', 'unit_sales', 'id', 'store_nbr', 'item_nbr',
                 'perishable', 'onpromotion']:
         feature_dict.pop(col, None)
 
-    # ---- Overwrite date-dependent features using the user's target_date ----
     feature_dict['month'] = target_date.month
-    weekday = target_date.weekday()  # Monday=0 ... Sunday=6
+    weekday = target_date.weekday()
     feature_dict['is_weekend'] = 1 if weekday >= 5 else 0
     for col in DOW_COLS:
         if col in feature_cols:
@@ -72,13 +83,10 @@ def build_input_features(latest_row, target_date, feature_cols):
     if dow_col in feature_cols:
         feature_dict[dow_col] = 1
 
-    # ---- Safely handle any remaining non-numeric values ----
     for k, v in list(feature_dict.items()):
         if isinstance(v, str):
             monitor_logger.warning(json.dumps({
-                'warning': f"Non-numeric value found for feature '{k}': '{v}' -- "
-                           f"replaced with 0. This may indicate a feature "
-                           f"encoding mismatch worth investigating."
+                'warning': f"Non-numeric value found for feature '{k}': '{v}' -- replaced with 0."
             }))
             feature_dict[k] = 0
         elif pd.isna(v):
@@ -100,7 +108,6 @@ def predict_demand(store_nbr, item_nbr, onpromotion, perishable, feature_dict,
         if col not in input_df.columns:
             input_df[col] = 0
     
-    # Ensure exact column alignment and numeric conversion to prevent model errors
     input_df = input_df[feature_cols].apply(pd.to_numeric, errors='coerce').fillna(0)
 
     if perishable == 1:
@@ -129,22 +136,6 @@ def check_input_drift(store_nbr, item_nbr, all_data):
 
 st.title("🛒 Favorita Retail Demand Forecasting")
 st.markdown("Quantile Regression based Inventory Optimization Dashboard")
-
-try:
-    model_perishable, model_nonperishable, feature_cols = load_models()
-    models_loaded = True
-except Exception as e:
-    models_loaded = False
-    st.error(f"Could not load models: {e}")
-
-df_features = load_feature_dataset()
-
-if df_features is None:
-    st.error(
-        "⚠️ Could not load `data/retail_features.csv`. Predictions cannot be "
-        "generated without it. Check that this file is actually present in "
-        "the deployed repo."
-    )
 
 if models_loaded and df_features is not None:
     st.sidebar.header("Forecast Parameters")
@@ -194,7 +185,6 @@ if models_loaded and df_features is not None:
                 if drift_reasons:
                     st.warning("⚠️ Lower-confidence prediction: " + "; ".join(drift_reasons) + ".")
 
-                # Fix 2: Timezone-aware UTC datetime implementation
                 log_entry = {
                     'timestamp': datetime.now(timezone.utc).isoformat(),
                     'store_nbr': int(store_nbr),
@@ -212,8 +202,9 @@ if models_loaded and df_features is not None:
                     st.json(log_entry)
 
             except Exception as e:
+                st.error("🚨 PREDICTION ERROR:")
+                st.exception(e)
                 import traceback
-                st.error(f"Detailed Error: {e}")
                 st.code(traceback.format_exc())
 
 st.divider()
