@@ -2,6 +2,7 @@
 # Deployment version for Streamlit Community Cloud: loads the quantile
 # regression models DIRECTLY inside Streamlit (no separate FastAPI process).
 
+# app/streamlit_app_standalone.py
 import os
 import math
 import logging
@@ -14,11 +15,12 @@ import streamlit as st
 
 st.set_page_config(page_title="Favorita Demand Forecasting", layout="centered")
 
-# Fix 3: Robust absolute paths anchored to script's own location
+# Correct Path Fix: Pointing to the project root directory
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-MODEL_DIR = os.path.join(BASE_DIR, 'models')
-DATA_PATH = os.path.join(BASE_DIR, 'data', 'retail_features.csv')
-LOG_DIR = os.path.join(BASE_DIR, 'logs')
+ROOT_DIR = os.path.abspath(os.path.join(BASE_DIR, '..'))
+MODEL_DIR = os.path.join(ROOT_DIR, 'models')
+DATA_PATH = os.path.join(ROOT_DIR, 'data', 'retail_features.csv')
+LOG_DIR = os.path.join(ROOT_DIR, 'logs')
 
 os.makedirs(LOG_DIR, exist_ok=True)
 logging.basicConfig(
